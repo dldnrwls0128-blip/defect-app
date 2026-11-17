@@ -33,10 +33,24 @@ export function normDong(v) {
   if (!Number.isFinite(n)) return s;
   return String(n < 100 ? 300 + n : n);
 }
+/**
+ * 호수 정규화 → 4자리 문자열. "901"·"0901"·901·"901호"·"301-901"·"301동 0901호"·"3010901" → "0901".
+ * 엑셀 셀이 숫자(901)로 오든 문자("0901")로 오든 같은 세대가 되게 한다.
+ */
 export function normHo(v) {
-  const s = str(v).replace(/호$/, "");
-  if (/^\d+$/.test(s)) return s.padStart(4, "0");
-  return s;
+  const s = str(v);
+  if (!s) return "";
+  const groups = s.match(/\d+/g);
+  if (!groups) return s;
+  let t = groups[groups.length - 1];
+  if (t.length >= 6 && groups.length === 1) t = t.slice(-4); // 동+호 붙은 값(3010901)
+  if (!/^\d{1,4}$/.test(t)) return s;
+  return t.padStart(4, "0");
+}
+/** 호수 → 층(숫자). "0901" → 9, "1203" → 12. 숫자가 아니면 NaN */
+export function floorOfHo(ho) {
+  const n = Number(ho);
+  return /^\d{3,4}$/.test(String(ho)) && n >= 100 ? Math.floor(n / 100) : NaN;
 }
 
 /** 헤더행과 데이터행(배열) → 레코드 배열 */
@@ -172,7 +186,18 @@ export function countBy(rows, fn) {
   return m;
 }
 
-export const sortUnit = (a, b) => (a.dong === b.dong ? a.ho.localeCompare(b.ho) : a.dong.localeCompare(b.dong)) || a.id - b.id;
+export const sortUnit = (a, b) => (a.dong === b.dong ? (a.ho || "").localeCompare(b.ho || "") : (a.dong || "").localeCompare(b.dong || "")) || a.id - b.id;
+
+/** 저장된 레코드의 동·호수 정규화(이전 버전 데이터 이전용). 바뀐 레코드만 반환 */
+export function migrateRows(rows) {
+  const changed = [];
+  for (const r of rows) {
+    const d = r.dong === undefined ? r.dong : normDong(r.dong);
+    const h = r.ho === undefined ? r.ho : normHo(r.ho);
+    if (d !== r.dong || h !== r.ho) { r.dong = d; r.ho = h; changed.push(r); }
+  }
+  return changed;
+}
 
 export function uniq(rows, key) {
   return [...new Set(rows.map((r) => r[key]).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ko"));

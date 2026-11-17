@@ -2,14 +2,14 @@
 import * as db from "./db.js";
 import {
   PRESETS, LOCAL_STATUS, statusOf, parseQuery, applyFilter, groupByTradeVendor, countBy,
-  hoLabel, shortDong, uniq, sortUnit, isMi, isPa,
+  hoLabel, shortDong, uniq, sortUnit, isMi, isPa, normHo, normDong, floorOfHo, migrateRows,
 } from "./data.js";
 import { importFile } from "./importer.js";
 import { compressImage, downloadBlob, shareOrDownload } from "./photo.js";
 import { exportBackup, importBackup } from "./backup.js";
 import { toXlsx, toCsv, unitText, vendorText, shareText } from "./exporter.js";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -201,10 +201,12 @@ function renderDong(dong) {
     u.all++;
     if (pre.test(r)) { u.hit++; if (st(r) !== "완료") u.open++; }
   }
-  const hos = [...units.keys()].sort();
+  // 층·세대는 실제 데이터에서만 만든다(없는 층/세대는 생기지 않음). 층 = 호수 ÷ 100 (0901 → 9층)
+  const hos = [...units.keys()].sort((a, b) => (+a || 0) - (+b || 0) || a.localeCompare(b));
   const floors = new Map();
   for (const h of hos) {
-    const f = h.slice(0, -2);
+    const fl = floorOfHo(h);
+    const f = Number.isFinite(fl) ? fl : -1; // -1 = 층을 알 수 없는 호수(기타)
     if (!floors.has(f)) floors.set(f, []);
     floors.get(f).push(h);
   }
@@ -212,13 +214,13 @@ function renderDong(dong) {
   const open = [...units.values()].reduce((a, u) => a + u.open, 0);
   view().innerHTML = `
     ${presetChips(S.unitPreset)}
-    <div class="card"><b>${dong}동</b> 세대 ${hos.length} · ${pre.label} ${n(hit)}건 · 잔여 <b class="hot-t">${n(open)}</b>
+    <div class="card" id="dong-sum" data-hit="${hit}" data-units="${hos.length}" data-floors="${[...floors.keys()].filter((f) => f >= 0).length}"><b>${dong}동</b> ${[...floors.keys()].filter((f) => f >= 0).length}개 층 · 세대 ${hos.length} · ${pre.label} ${n(hit)}건 · 잔여 <b class="hot-t">${n(open)}</b>
       <div class="row-actions"><a class="btn" href="#/list" id="dong-list">이 동 공종별 목록</a></div></div>
-    <div class="ho-grid">${[...floors.entries()].sort((a, b) => +b[0] - +a[0]).map(([f, list]) => `
-      <div class="floor"><span class="fl">${+f}F</span>${list.map((h) => {
+    <div class="ho-grid">${[...floors.entries()].sort((a, b) => b[0] - a[0]).map(([f, list]) => `
+      <div class="floor" data-floor="${f}"><span class="fl">${f < 0 ? "기타" : f + "F"}</span>${list.map((h) => {
         const u = units.get(h);
         const lvl = u.open === 0 ? (u.hit ? "z" : "n") : u.open >= 10 ? "h" : u.open >= 4 ? "m" : "l";
-        return `<a class="ho ${lvl}" href="#/unit/${dong}/${h}"><b>${+h}</b><small>${u.hit ? `${u.open}/${u.hit}` : "-"}</small></a>`;
+        return `<a class="ho ${lvl}" data-ho="${esc(h)}" data-hit="${u.hit}" href="#/unit/${dong}/${encodeURIComponent(h)}"><b>${esc(/^\d+$/.test(h) ? +h : h)}</b><small>${u.hit ? `${u.open}/${u.hit}` : "-"}</small></a>`;
       }).join("")}</div>`).join("")}</div>
     <p class="help">칸의 숫자 = 잔여/${pre.label} 건수. 진한 색일수록 잔여가 많습니다.</p>`;
   bindPreset((k) => { S.unitPreset = k; LS.set("unitPreset", k); renderDong(dong); });
@@ -313,7 +315,7 @@ function renderList() {
   bindPreset((k) => { S.filter = { ...S.filter, preset: k }; LS.set("filter", S.filter); renderList(); });
   $$("[data-f]").forEach((el) => el.addEventListener("change", () => {
     let v = el.value.trim();
-    if (el.dataset.f === "ho" && v) v = v.replace(/\D/g, "").padStart(4, "0");
+    if (el.dataset.f === "ho" && v) v = normHo(v);
     S.filter = { ...S.filter, [el.dataset.f]: v };
     if (el.dataset.f === "dong") { delete S.filter.trade; delete S.filter.vendor; delete S.filter.type; }
     LS.set("filter", S.filter);
@@ -594,6 +596,13 @@ async function renderSettings() {
 /* ---------- 데이터 로드·가져오기 ---------- */
 async function loadAll() {
   S.rows = await db.getAll("defects");
+  // 이전 버전에 저장된 동·호수 표기 정리(901 → 0901 등). 내 기록·사진은 순번(id)으로 연결돼 그대로 유지
+  const fixed = migrateRows(S.rows);
+  if (fixed.length) await db.putMany("defects", fixed);
+  const rec = LS.get("recent", []);
+  const rec2 = [...new Set(rec.map((k) => { const [d, h] = k.split("|"); return `${normDong(d)}|${normHo(h)}`; }))];
+  if (rec2.join() !== rec.join()) LS.set("recent", rec2);
+  if (S.filter?.ho && S.filter.ho !== normHo(S.filter.ho)) { S.filter.ho = normHo(S.filter.ho); LS.set("filter", S.filter); }
   S.rows.sort(sortUnit);
   S.byId = new Map(S.rows.map((r) => [r.id, r]));
   S.edits = new Map((await db.getAll("edits")).map((e) => [e.id, e]));
@@ -641,8 +650,8 @@ function route() {
   const parts = (location.hash.replace(/^#\/?/, "") || "home").split("/");
   const [p, a, b] = parts;
   window.scrollTo(0, 0);
-  if (p === "dong" && a) return renderDong(a);
-  if (p === "unit" && a && b) return renderUnit(a, b);
+  if (p === "dong" && a) return renderDong(normDong(decodeURIComponent(a)));
+  if (p === "unit" && a && b) return renderUnit(normDong(decodeURIComponent(a)), normHo(decodeURIComponent(b)));
   if (p === "item" && a) return renderItem(+a);
   if (p === "list") return renderList();
   if (p === "dash") return renderDash();
@@ -658,5 +667,5 @@ window.addEventListener("hashchange", route);
   busy(false);
   route();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
-  window.__defectApp = { S, loadAll };
+  window.__defectApp = { S, loadAll, parseQuery };
 })();

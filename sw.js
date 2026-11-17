@@ -1,5 +1,5 @@
 /* 하자관리 서비스 워커 — 앱 셸 캐시, 오프라인 동작 (하자 데이터는 캐시하지 않음: IndexedDB에만 저장) */
-const CACHE = "defect-app-v1";
+const CACHE = "defect-app-v2";
 const PRECACHE = ["./", "./index.html", "./manifest.webmanifest", "./css/app.css",
   "./js/app.js", "./js/db.js", "./js/data.js", "./js/importer.js", "./js/import-worker.js",
   "./js/exporter.js", "./js/backup.js", "./js/photo.js",
